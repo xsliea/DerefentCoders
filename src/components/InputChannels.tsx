@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { QrCode, UploadCloud, Link as LinkIcon, Camera, VideoOff, Loader2, Image as ImageIcon } from 'lucide-react';
+import { QrCode, UploadCloud, Link as LinkIcon, Camera, VideoOff, Loader2, Image as ImageIcon, Mic, Volume2 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { createWorker } from 'tesseract.js';
 import { PaymentTransaction, InputMode } from '../types/payment';
 import { parseUpiUri } from '../services/upiParser';
+import { speakText, numberToWords, createSpeechRecognizer, requestMicPermission } from '../services/speechService';
+import { evaluatePaymentRisk } from '../services/heuristicsEngine';
 
 interface InputChannelsProps {
-  onIntercept: (tx: PaymentTransaction) => void;
+  onIntercept: (tx: PaymentTransaction, navigateToPin?: boolean) => void;
 }
 
 export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => {
@@ -15,6 +17,14 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [manualInput, setManualInput] = useState('');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  
+  // Pending QR transaction waiting for user specified amount entry
+  const [pendingQrTx, setPendingQrTx] = useState<PaymentTransaction | null>(null);
+  const [userAmountInput, setUserAmountInput] = useState<string>('');
+  const [isAmountMicActive, setIsAmountMicActive] = useState(false);
+  const [heardAmountSpeech, setHeardAmountSpeech] = useState('');
+  const [isConfirmingAmount, setIsConfirmingAmount] = useState(false);
+  const amountRecognizerRef = useRef<any>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -24,8 +34,162 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
   useEffect(() => {
     return () => {
       stopCamera();
+      stopAmountVoiceListener();
     };
   }, []);
+
+  const stopAmountVoiceListener = () => {
+    if (amountRecognizerRef.current) {
+      try { amountRecognizerRef.current.stop(); } catch(e) {}
+      amountRecognizerRef.current = null;
+    }
+    setIsAmountMicActive(false);
+  };
+
+  const startAmountVoiceListener = (isSecondConfirmStage = false) => {
+    stopAmountVoiceListener();
+    const recognizer = createSpeechRecognizer(
+      'en',
+      (transcript) => {
+        setHeardAmountSpeech(transcript);
+
+        if (isSecondConfirmStage) {
+          // 2nd stage: Listening specifically for "confirm" / "proceed" OR "reject" / "no" / "re-enter"
+          const confirmCmds = ['confirm', 'proceed', 'yes', 'pay', 'ok', 'okay', 'theek', 'haan', 'bhejo'];
+          const rejectCmds = ['reject', 'no', 'cancel', 'reenter', 're-enter', 'change', 'wrong', 'radd', 'mana', 'galat'];
+
+          if (confirmCmds.some(cmd => transcript.includes(cmd))) {
+            stopAmountVoiceListener();
+            handleFinalConfirmAndProceed();
+          } else if (rejectCmds.some(cmd => transcript.includes(cmd))) {
+            stopAmountVoiceListener();
+            handleRejectAndReEnter();
+          }
+        } else {
+          // 1st stage: Listening for spoken numbers & 1st "confirm"
+          const numMatch = transcript.match(/\d+/);
+          if (numMatch) {
+            setUserAmountInput(numMatch[0]);
+          } else if (transcript.includes('fifty') || transcript.includes('pachas')) {
+            setUserAmountInput('50');
+          } else if (transcript.includes('hundred') || transcript.includes('sau')) {
+            setUserAmountInput('100');
+          } else if (transcript.includes('thousand') || transcript.includes('hazar')) {
+            setUserAmountInput('1000');
+          }
+
+          const confirmCmds = ['confirm', 'proceed', 'yes', 'pay', 'ok', 'okay', 'theek', 'haan', 'bhejo'];
+          if (confirmCmds.some(cmd => transcript.includes(cmd))) {
+            stopAmountVoiceListener();
+            handleInitialConfirm();
+          }
+        }
+      },
+      () => setIsAmountMicActive(true),
+      () => setIsAmountMicActive(false)
+    );
+
+    if (recognizer) {
+      try {
+        recognizer.start();
+        amountRecognizerRef.current = recognizer;
+        setIsAmountMicActive(true);
+      } catch (err) {
+        console.warn("Could not start amount speech recognition:", err);
+      }
+    }
+  };
+
+  const handleQrDetected = (parsed: PaymentTransaction) => {
+    stopCamera();
+
+    // 1. INSTANT SCAM ALERTING: Direct High-Risk Scam Interception
+    const risk = evaluatePaymentRisk(parsed);
+    const isHighRiskScam =
+      risk.level === 'danger' ||
+      parsed.isRefundScam ||
+      (parsed.claimedAmount && Math.abs(parsed.amount - parsed.claimedAmount) > 100) ||
+      parsed.vpa.toLowerCase().includes('scam') ||
+      parsed.vpa.toLowerCase().includes('refund');
+
+    if (isHighRiskScam) {
+      // 🚨 Directly alert out loud and navigate to Page 2 immediately without user needing to confirm anything!
+      const alertWords = numberToWords(parsed.amount || 9900, 'en');
+      const scamNotice = `Warning! Stop! High risk scam detected! Someone is attempting to deduct ${alertWords} from your account! Payment intercepted!`;
+
+      speakText(scamNotice, 'en', undefined, () => {
+        onIntercept({ ...parsed, risk });
+      });
+      return;
+    }
+
+    // 2. SAFE / STANDARD MERCHANTS: 100% Voice-Controlled Amount Entry
+    setPendingQrTx(parsed);
+    const initAmt = parsed.amount > 0 ? parsed.amount.toString() : '';
+    setUserAmountInput(initAmt);
+    setHeardAmountSpeech('');
+    setIsConfirmingAmount(false);
+
+    const targetName = parsed.name || 'Merchant';
+    const amountPrompt = parsed.amount > 0 ? `for ${numberToWords(parsed.amount, 'en')}` : '';
+    const audioPrompt = `QR code verified for ${targetName} ${amountPrompt}. Please say aloud the payment amount followed by confirm.`;
+
+    speakText(audioPrompt, 'en', undefined, () => {
+      startAmountVoiceListener(false);
+    });
+  };
+
+  // Step 1: User says 1st "Confirm" -> Voice out specified amount and ask for 2nd voice confirmation
+  const handleInitialConfirm = () => {
+    if (!pendingQrTx) return;
+    stopAmountVoiceListener();
+    setIsConfirmingAmount(true);
+
+    const finalAmount = parseFloat(userAmountInput) || pendingQrTx.amount || 100;
+    const words = numberToWords(finalAmount, 'en');
+    const targetName = pendingQrTx.name || 'Merchant';
+    const askConfirmationPrompt = `You specified ${words} for ${targetName}. Say confirm to proceed to PIN entry, or say reject to re-enter amount.`;
+
+    speakText(askConfirmationPrompt, 'en', undefined, () => {
+      startAmountVoiceListener(true);
+    });
+  };
+
+  // Step 2A: User says 2nd "Confirm" -> Voice out confirmation and auto-proceed hands-free to PIN entry page (Page 3)
+  const handleFinalConfirmAndProceed = () => {
+    if (!pendingQrTx) return;
+    stopAmountVoiceListener();
+
+    const finalAmount = parseFloat(userAmountInput) || pendingQrTx.amount || 100;
+    const updatedTx: PaymentTransaction = {
+      ...pendingQrTx,
+      amount: finalAmount
+    };
+
+    const words = numberToWords(finalAmount, 'en');
+    const targetName = pendingQrTx.name || 'Merchant';
+    const confirmNotice = `Amount of ${words} confirmed for ${targetName}. Proceeding to UPI PIN entry now.`;
+
+    speakText(confirmNotice, 'en', undefined, () => {
+      setPendingQrTx(null);
+      setUserAmountInput('');
+      setIsConfirmingAmount(false);
+      onIntercept(updatedTx, true);
+    });
+  };
+
+  // Step 2B: User says "Reject" -> Reset amount, ask user to re-voice amount, and take back to amount entry stage!
+  const handleRejectAndReEnter = () => {
+    stopAmountVoiceListener();
+    setUserAmountInput('');
+    setIsConfirmingAmount(false);
+    setHeardAmountSpeech('');
+
+    const resetPrompt = `Amount reset. Please speak the payment amount again followed by confirm.`;
+    speakText(resetPrompt, 'en', undefined, () => {
+      startAmountVoiceListener(false);
+    });
+  };
 
   const startCamera = async () => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -96,15 +260,17 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imgData.data, imgData.width, imgData.height, {
-          inversionAttempts: "dontInvert"
+          inversionAttempts: "attemptBoth"
         });
 
         if (code && code.data) {
-          if (code.data.includes('upi://pay') || code.data.includes('pa=')) {
+          const rawData = code.data;
+          const lower = rawData.toLowerCase();
+          if (lower.includes('upi://pay') || lower.includes('pa=') || lower.includes('upi')) {
             stopCamera();
-            const parsed = parseUpiUri(code.data);
+            const parsed = parseUpiUri(rawData);
             if (parsed) {
-              onIntercept(parsed);
+              handleQrDetected(parsed);
               return;
             }
           }
@@ -138,7 +304,7 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
           const parsed = parseUpiUri(qrCode.data);
           if (parsed) {
             setIsOcrProcessing(false);
-            onIntercept(parsed);
+            handleQrDetected(parsed);
             return;
           }
         }
@@ -157,7 +323,7 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
       const vpa = vpaMatch ? vpaMatch[1] : 'support-refund@okaxis';
 
       setIsOcrProcessing(false);
-      onIntercept({
+      handleQrDetected({
         vpa,
         name: 'Extracted Payment Request',
         amount,
@@ -177,7 +343,7 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
     if (!manualInput.trim()) return;
     const parsed = parseUpiUri(manualInput);
     if (parsed) {
-      onIntercept(parsed);
+      handleQrDetected(parsed);
       setManualInput('');
     } else {
       alert("Invalid UPI URI format. Example: upi://pay?pa=store@upi&pn=GroceryStore&am=250");
@@ -186,8 +352,144 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
 
   return (
     <section className="rounded-2xl bg-slate-900/60 border border-slate-800 p-5 shadow-sm space-y-4">
-      {/* Header & Tabs */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+      {/* ENTER SPECIFIED AMOUNT SCREEN AFTER QR DETECTED */}
+      {pendingQrTx ? (
+        <div className="p-5 rounded-2xl bg-slate-950 border-2 border-sky-500 shadow-xl space-y-4 animate-fade-in">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center space-x-2 text-sky-400 font-bold text-xs">
+              <QrCode className="w-4 h-4 text-emerald-400" />
+              <span>QR Code Scanned & Verified</span>
+            </div>
+            <button
+              onClick={() => {
+                stopAmountVoiceListener();
+                setPendingQrTx(null);
+                setIsConfirmingAmount(false);
+              }}
+              className="text-xs text-slate-400 hover:text-slate-200"
+            >
+              Cancel
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[11px] uppercase font-bold text-slate-400">Recipient Details</div>
+            <div className="text-base font-bold text-white flex items-center gap-1.5">
+              <span>{pendingQrTx.name}</span>
+              {pendingQrTx.isVerifiedMerchant && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30">
+                  Verified Merchant
+                </span>
+              )}
+            </div>
+            <div className="text-xs font-mono text-slate-400">{pendingQrTx.vpa}</div>
+          </div>
+
+          {/* Banner when in 2nd confirmation stage */}
+          {isConfirmingAmount && (
+            <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-300 text-xs space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <Volume2 className="w-4 h-4 text-amber-400 animate-pulse" />
+                <span>Audio Confirmation Required</span>
+              </div>
+              <p className="text-[11px] text-slate-200">
+                Listening for voice... Say <strong>"CONFIRM"</strong> to proceed to safety check, or say <strong>"REJECT"</strong> to re-enter amount.
+              </p>
+            </div>
+          )}
+
+          {/* Amount Entry Input */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-300">
+                {isConfirmingAmount ? 'Confirmed Payment Amount (₹)' : 'Enter Payment Amount (₹)'}
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isAmountMicActive) stopAmountVoiceListener();
+                  else startAmountVoiceListener(isConfirmingAmount);
+                }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  isAmountMicActive ? 'bg-red-600 text-white shadow-sm shadow-red-600/30' : 'bg-slate-800 text-slate-300 hover:text-white border border-slate-700'
+                }`}
+              >
+                <Mic className="w-3.5 h-3.5 text-sky-400" />
+                <span>{isAmountMicActive ? 'Mic Active' : 'Voice Input'}</span>
+              </button>
+            </div>
+
+            <div className="relative">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xl font-bold text-sky-400">₹</span>
+              <input
+                type="number"
+                value={userAmountInput}
+                onChange={(e) => setUserAmountInput(e.target.value)}
+                placeholder="Enter or speak amount (e.g. 250)"
+                disabled={isConfirmingAmount}
+                className="w-full pl-9 pr-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-xl font-black text-white placeholder-slate-600 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none font-mono disabled:opacity-80"
+                autoFocus
+              />
+            </div>
+
+            {/* Voice Status & Heard Speech Indicator */}
+            {isAmountMicActive && (
+              <div className="p-2.5 rounded-xl bg-sky-950/80 border border-sky-500/40 text-xs flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
+                  <span className="text-sky-300 font-semibold">
+                    {isConfirmingAmount ? (
+                      <>Listening... Say <strong>"Confirm"</strong> or <strong>"Reject"</strong></>
+                    ) : (
+                      <>Listening... Speak amount or say <strong>"Confirm"</strong></>
+                    )}
+                  </span>
+                </div>
+                {heardAmountSpeech && (
+                  <span className="text-emerald-400 font-mono text-[11px] bg-slate-900 px-2 py-0.5 rounded border border-emerald-500/30">
+                    "{heardAmountSpeech}"
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Quick Amount Preset Chips (only when editing) */}
+            {!isConfirmingAmount && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {[50, 100, 250, 500, 1000, 5000].map(preset => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setUserAmountInput(preset.toString())}
+                    className="px-3 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-bold text-slate-300 transition"
+                  >
+                    +₹{preset}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <button
+              onClick={handleRejectAndReEnter}
+              className="py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 font-bold text-xs flex items-center justify-center gap-1.5 transition"
+            >
+              <span>RESET AMOUNT 🔄</span>
+            </button>
+            <button
+              onClick={handleInitialConfirm}
+              className="py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-sky-600/30 transition active:scale-95"
+            >
+              <span>CONFIRM & PROCEED ➔</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Header & Tabs */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
         <div>
           <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
             <QrCode className="w-4 h-4 text-sky-400" />
@@ -360,6 +662,8 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
             </button>
           </div>
         </form>
+      )}
+        </>
       )}
     </section>
   );

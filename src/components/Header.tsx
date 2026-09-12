@@ -9,6 +9,8 @@ interface HeaderProps {
   onToggleContrast: () => void;
   fontScaled: boolean;
   onToggleFontScale: () => void;
+  currentPage?: 'app_home' | 'extension_page' | 'pin_page' | 'receipt_page' | 'blocked_page';
+  onNavigatePage?: (page: 'app_home' | 'extension_page' | 'pin_page' | 'receipt_page' | 'blocked_page') => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,11 +19,13 @@ export const Header: React.FC<HeaderProps> = ({
   highContrast,
   onToggleContrast,
   fontScaled,
-  onToggleFontScale
+  onToggleFontScale,
+  currentPage = 'app_home',
+  onNavigatePage
 }) => {
   return (
     <header className="bg-slate-900/95 border-b border-slate-800 sticky top-0 z-50 backdrop-blur-md px-4 py-3.5 shadow-sm" role="banner">
-      <div className="max-w-4xl mx-auto flex items-center justify-between">
+      <div className="max-w-4xl mx-auto flex items-center justify-between flex-wrap gap-2">
         {/* Brand identity */}
         <div className="flex items-center space-x-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-indigo-600 flex items-center justify-center shadow-md shadow-sky-500/20 ring-1 ring-white/10">
@@ -31,7 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-2">
               <span className="text-base font-extrabold tracking-tight text-white">VoiceGuard</span>
               <span className="text-[10px] font-bold tracking-widest uppercase px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                UPI
+                UPI Extension
               </span>
             </div>
             <p className="text-[11px] font-medium text-slate-400">
@@ -41,7 +45,37 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Accessibility Quick Controls */}
-        <div className="flex items-center space-x-2" role="toolbar" aria-label="Accessibility Settings">
+        <div className="flex items-center space-x-2 flex-wrap gap-y-1" role="toolbar" aria-label="Accessibility Settings">
+          {/* Direct Page Jump Buttons */}
+          {onNavigatePage && (
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px] font-bold mr-1">
+              <button
+                onClick={() => onNavigatePage('app_home')}
+                className={`px-2.5 py-1 rounded-lg transition ${
+                  currentPage === 'app_home' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                1. Dummy App
+              </button>
+              <button
+                onClick={() => onNavigatePage('extension_page')}
+                className={`px-2.5 py-1 rounded-lg transition ${
+                  currentPage === 'extension_page' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                2. Extension Page
+              </button>
+              <button
+                onClick={() => onNavigatePage('pin_page')}
+                className={`px-2.5 py-1 rounded-lg transition ${
+                  currentPage === 'pin_page' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                3. PIN Entry
+              </button>
+            </div>
+          )}
+
           {/* Language Switcher */}
           <button
             onClick={onToggleLang}

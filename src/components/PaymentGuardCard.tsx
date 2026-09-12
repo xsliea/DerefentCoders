@@ -19,9 +19,11 @@ import { audioSynthesizer } from '../services/audioSynthesizer';
 interface PaymentGuardCardProps {
   tx: PaymentTransaction | null;
   lang: AppLanguage;
+  onApprove?: () => void;
+  onReject?: () => void;
 }
 
-export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) => {
+export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang, onApprove, onReject }) => {
   const [doubleTapCount, setDoubleTapCount] = useState(0);
   const [isListening, setIsListening] = useState(false);
   const [heardSpeech, setHeardSpeech] = useState<string>('');
@@ -84,6 +86,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
     const msg = lang === 'hi' ? `₹${amountVal} का भुगतान सुरक्षित रूप से पूरा हुआ` : `Payment of ₹${amountVal} completed safely`;
     setActionNotice({ type: 'approved', text: msg });
     speakText(msg, lang);
+    if (onApprove) onApprove();
   };
 
   const rejectPayment = () => {
@@ -91,6 +94,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
     const msg = lang === 'hi' ? "भुगतान रद्द कर दिया गया। आपका खाता सुरक्षित है।" : "Payment cancelled and blocked. Your funds are protected.";
     setActionNotice({ type: 'rejected', text: msg });
     speakText(msg, lang);
+    if (onReject) onReject();
   };
 
   // Announce transaction and auto-activate listening when speech finishes
@@ -112,7 +116,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
     if (lang === 'hi') {
       if (tx.risk.level === 'danger') {
         speakText(
-          `चेतावनी! रुकिए! यहाँ ${tx.claimedAmount ? 'नब्बे रुपये नहीं' : ''} नौ हज़ार नौ सौ रुपये माँगे जा रहे हैं। यह एक धोखा हो सकता है। रद्द करने के लिए 'रिजेक्ट' बोलें या लाल बटन दबाएँ।`,
+          `चेतावनी! रुकिए! यहाँ ${words} माँगे जा रहे हैं। यह एक धोखा हो सकता है। रद्द करने के लिए 'रिजेक्ट' बोलें या लाल बटन दबाएँ।`,
           'hi',
           undefined,
           onFinishSpeaking
