@@ -184,6 +184,7 @@ export const App: React.FC = () => {
             </div>
 
             <DummyUpiApp
+              lang={lang}
               pendingTx={currentTransaction}
               flowState="app_home"
               onInitiatePayment={(tx) => {
@@ -218,7 +219,11 @@ export const App: React.FC = () => {
             </div>
 
             {/* Launch Camera Scanner & Interception Channels */}
-            <InputChannels onIntercept={handleSelectTransaction} />
+            <InputChannels
+              onIntercept={handleSelectTransaction}
+              lang={lang}
+              hasActiveTransaction={Boolean(currentTransaction)}
+            />
 
             {/* Quick Test Simulation Triggers */}
             <ScenarioPicker onSelectScenario={handleSelectTransaction} />
@@ -247,6 +252,7 @@ export const App: React.FC = () => {
             </div>
 
             <DummyUpiApp
+              lang={lang}
               pendingTx={currentTransaction}
               flowState="pin_entry"
               onInitiatePayment={handleSelectTransaction}

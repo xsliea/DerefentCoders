@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Smartphone,
   QrCode,
@@ -14,9 +14,13 @@ import {
   ArrowLeft,
   ChevronRight,
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  Mic,
+  MicOff,
+  Volume2
 } from 'lucide-react';
-import { PaymentTransaction } from '../types/payment';
+import { PaymentTransaction, AppLanguage } from '../types/payment';
+import { speakText, createSpeechRecognizer, requestMicPermission } from '../services/speechService';
 
 interface DummyUpiAppProps {
   onInitiatePayment: (tx: PaymentTransaction | null) => void;
@@ -25,6 +29,7 @@ interface DummyUpiAppProps {
   onProceedToPin: () => void;
   onPaymentComplete: () => void;
   onResetToHome: () => void;
+  lang?: AppLanguage;
 }
 
 export const DummyUpiApp: React.FC<DummyUpiAppProps> = ({
@@ -33,10 +38,15 @@ export const DummyUpiApp: React.FC<DummyUpiAppProps> = ({
   flowState,
   onProceedToPin,
   onPaymentComplete,
-  onResetToHome
+  onResetToHome,
+  lang = 'en'
 }) => {
   const [pin, setPin] = useState<string>('');
   const [pinError, setPinError] = useState(false);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [voiceHeard, setVoiceHeard] = useState<string>('');
+  const [voiceStatus, setVoiceStatus] = useState<string>('');
+  const recognizerRef = useRef<any>(null);
 
   const sampleMerchants: PaymentTransaction[] = [
     {
@@ -79,12 +89,223 @@ export const DummyUpiApp: React.FC<DummyUpiAppProps> = ({
 
   const handlePinSubmit = () => {
     if (pin.length === 4) {
+      stopVoiceListener();
       onPaymentComplete();
       setPin('');
     } else {
       setPinError(true);
     }
   };
+
+  const stopVoiceListener = () => {
+    if (recognizerRef.current) {
+      try {
+        recognizerRef.current.stop();
+      } catch (e) {}
+      recognizerRef.current = null;
+    }
+    setIsVoiceActive(false);
+  };
+
+  const promptAndListenHome = () => {
+    stopVoiceListener();
+    setVoiceStatus('Speaking instructions...');
+    const welcomeMsg =
+      lang === 'hi'
+        ? 'पेक्विक यूपीआई में आपका स्वागत है। स्कैनर खोलने के लिए "स्कैन क्यूआर कोड" कहें, या बिजली बिल अथवा सुपरमार्केट का नाम लें।'
+        : 'Welcome to PayQuick UPI. Please say "Scan QR Code" to open scanner, or say "Pay Electricity" or "Pay Groceries".';
+
+    speakText(
+      welcomeMsg,
+      lang,
+      undefined,
+      () => {
+        startListeningHome();
+      }
+    );
+  };
+
+  const startListeningHome = () => {
+    stopVoiceListener();
+    setVoiceStatus('Listening for voice command...');
+
+    const recognizer = createSpeechRecognizer(
+      lang,
+      (transcript) => {
+        const lower = transcript.toLowerCase().trim();
+        setVoiceHeard(lower);
+
+        // 1. Scan QR / Camera command
+        const scanCmds = ['scan', 'qr', 'scanner', 'camera', 'scan qr', 'scan qr code', 'kod', 'q r'];
+        if (scanCmds.some(cmd => lower.includes(cmd))) {
+          stopVoiceListener();
+          setVoiceStatus('Recognized: Opening QR Scanner...');
+          speakText(lang === 'hi' ? 'क्यूआर स्कैनर खोला जा रहा है' : 'Opening QR Scanner', lang, undefined, () => {
+            onInitiatePayment(null);
+          });
+          return;
+        }
+
+        // 2. Electricity bill
+        const elecCmds = ['electricity', 'bill', 'electric', 'power', 'bijli'];
+        if (elecCmds.some(cmd => lower.includes(cmd))) {
+          stopVoiceListener();
+          setVoiceStatus('Recognized: Quick Bill Payment Desk');
+          speakText(lang === 'hi' ? 'बिजली बिल चुना गया' : 'Selected Electricity Bill payment', lang, undefined, () => {
+            onInitiatePayment(sampleMerchants[0]);
+          });
+          return;
+        }
+
+        // 3. Customer support / refund
+        const supportCmds = ['support', 'customer', 'refund', 'agent'];
+        if (supportCmds.some(cmd => lower.includes(cmd))) {
+          stopVoiceListener();
+          setVoiceStatus('Recognized: Customer Support Desk');
+          speakText(lang === 'hi' ? 'कस्टमर सपोर्ट चुना गया' : 'Selected Customer Support payment', lang, undefined, () => {
+            onInitiatePayment(sampleMerchants[1]);
+          });
+          return;
+        }
+
+        // 4. Groceries
+        const groceryCmds = ['grocery', 'groceries', 'supermarket', 'fresh', 'kirana', 'rashan'];
+        if (groceryCmds.some(cmd => lower.includes(cmd))) {
+          stopVoiceListener();
+          setVoiceStatus('Recognized: Fresh Groceries Supermarket');
+          speakText(lang === 'hi' ? 'सुपरमार्केट चुना गया' : 'Selected Fresh Groceries payment', lang, undefined, () => {
+            onInitiatePayment(sampleMerchants[2]);
+          });
+          return;
+        }
+      },
+      () => setIsVoiceActive(true),
+      () => setIsVoiceActive(false)
+    );
+
+    if (recognizer) {
+      try {
+        recognizer.start();
+        recognizerRef.current = recognizer;
+        setIsVoiceActive(true);
+      } catch (err) {
+        console.warn("Could not start home speech recognition:", err);
+      }
+    }
+  };
+
+  const promptAndListenPin = () => {
+    stopVoiceListener();
+    setVoiceStatus('Speaking PIN prompt...');
+    const pinMsg =
+      lang === 'hi'
+        ? 'कृपया कीपैड पर अपना 4 अंकों का यूपीआई पिन दर्ज करें, या पिन बोलें।'
+        : 'Please enter your four-digit UPI PIN on the keypad, or speak your digits.';
+
+    speakText(
+      pinMsg,
+      lang,
+      undefined,
+      () => {
+        startListeningPin();
+      }
+    );
+  };
+
+  const startListeningPin = () => {
+    stopVoiceListener();
+    setVoiceStatus('Listening for PIN digits...');
+
+    const wordToNum: Record<string, string> = {
+      'zero': '0', 'shunya': '0',
+      'one': '1', 'ek': '1',
+      'two': '2', 'do': '2',
+      'three': '3', 'teen': '3',
+      'four': '4', 'char': '4',
+      'five': '5', 'paanch': '5',
+      'six': '6', 'chhah': '6',
+      'seven': '7', 'saat': '7',
+      'eight': '8', 'aath': '8',
+      'nine': '9', 'nau': '9'
+    };
+
+    const recognizer = createSpeechRecognizer(
+      lang,
+      (transcript) => {
+        const lower = transcript.toLowerCase().trim();
+        setVoiceHeard(lower);
+
+        // Submit command
+        if (lower.includes('submit') || lower.includes('confirm') || lower.includes('pay') || lower.includes('bhejo') || lower.includes('done')) {
+          handlePinSubmit();
+          return;
+        }
+
+        // Delete / clear command
+        if (lower.includes('delete') || lower.includes('clear') || lower.includes('back') || lower.includes('remove') || lower.includes('hatao')) {
+          handleDelete();
+          return;
+        }
+
+        // Extract digits directly or convert word numbers
+        let detected = '';
+        const words = lower.split(/\s+/);
+        for (const w of words) {
+          if (wordToNum[w] !== undefined) {
+            detected += wordToNum[w];
+          } else {
+            const digitMatch = w.match(/\d/g);
+            if (digitMatch) detected += digitMatch.join('');
+          }
+        }
+
+        if (detected.length > 0) {
+          setPin(prev => {
+            const nextPin = (prev + detected).slice(0, 4);
+            if (nextPin.length === 4) {
+              stopVoiceListener();
+              setTimeout(() => {
+                onPaymentComplete();
+              }, 400);
+            }
+            return nextPin;
+          });
+        }
+      },
+      () => setIsVoiceActive(true),
+      () => setIsVoiceActive(false)
+    );
+
+    if (recognizer) {
+      try {
+        recognizer.start();
+        recognizerRef.current = recognizer;
+        setIsVoiceActive(true);
+      } catch (err) {
+        console.warn("Could not start pin speech recognition:", err);
+      }
+    }
+  };
+
+  useEffect(() => {
+    let timer: any;
+    if (flowState === 'app_home') {
+      timer = setTimeout(() => {
+        promptAndListenHome();
+      }, 700);
+    } else if (flowState === 'pin_entry') {
+      timer = setTimeout(() => {
+        promptAndListenPin();
+      }, 500);
+    } else {
+      stopVoiceListener();
+    }
+
+    return () => {
+      clearTimeout(timer);
+      stopVoiceListener();
+    };
+  }, [flowState, lang]);
 
   return (
     <div className="max-w-md mx-auto rounded-3xl bg-slate-900 border-4 border-slate-800 shadow-2xl overflow-hidden font-sans text-slate-100 min-h-[580px] flex flex-col">
@@ -134,6 +355,50 @@ export const DummyUpiApp: React.FC<DummyUpiAppProps> = ({
                   Scanning any QR will route through safety inspection before PIN entry.
                 </div>
               </div>
+            </div>
+
+            {/* Interactive Voice Assistant Control Panel */}
+            <div className="p-3.5 rounded-2xl bg-slate-950/90 border border-sky-500/40 shadow-lg space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-full ${isVoiceActive ? 'bg-red-500 animate-ping' : 'bg-slate-600'}`} />
+                  <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                    <Mic className={`w-3.5 h-3.5 ${isVoiceActive ? 'text-red-400 animate-pulse' : 'text-sky-400'}`} />
+                    <span>Voice Navigation: {isVoiceActive ? 'Listening...' : 'Ready'}</span>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={promptAndListenHome}
+                  className="px-2.5 py-1 rounded-lg bg-sky-600/20 hover:bg-sky-600/40 text-sky-300 border border-sky-500/30 text-[11px] font-bold flex items-center gap-1 transition active:scale-95"
+                  title="Replay Audio Instructions"
+                >
+                  <Volume2 className="w-3 h-3 text-sky-400" />
+                  <span>Hear Prompt 🔊</span>
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-300 bg-slate-900/90 p-2.5 rounded-xl border border-slate-800 space-y-1">
+                <div className="text-slate-400 font-medium">Say aloud any command:</div>
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  <span className="px-2 py-0.5 rounded-md bg-sky-500/20 text-sky-300 font-bold border border-sky-500/30 text-[10px]">
+                    "Scan QR Code"
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30 text-[10px]">
+                    "Pay Electricity"
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px]">
+                    "Pay Groceries"
+                  </span>
+                </div>
+              </div>
+
+              {voiceHeard && (
+                <div className="text-[11px] text-emerald-400 font-mono bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1.5 rounded-xl flex items-center justify-between">
+                  <span className="text-slate-400 text-[10px] uppercase font-bold">Heard speech:</span>
+                  <span className="font-bold">"{voiceHeard}"</span>
+                </div>
+              )}
             </div>
 
             {/* Quick Action Grid */}
@@ -283,6 +548,38 @@ export const DummyUpiApp: React.FC<DummyUpiAppProps> = ({
                 Please enter a 4-digit PIN to confirm payment.
               </div>
             )}
+
+            {/* Interactive Voice Assistant Control Panel for PIN Entry */}
+            <div className="p-3 rounded-2xl bg-slate-900/90 border border-emerald-500/40 shadow-md space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-full ${isVoiceActive ? 'bg-red-500 animate-ping' : 'bg-slate-600'}`} />
+                  <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                    <Mic className={`w-3.5 h-3.5 ${isVoiceActive ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`} />
+                    <span>Voice PIN: {isVoiceActive ? 'Listening...' : 'Ready'}</span>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={promptAndListenPin}
+                  className="px-2 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1 transition active:scale-95"
+                  title="Replay PIN Audio Prompt"
+                >
+                  <Volume2 className="w-3 h-3 text-emerald-400" />
+                  <span>Hear Prompt 🔊</span>
+                </button>
+              </div>
+              <div className="text-[11px] text-slate-300 bg-slate-950 p-2 rounded-xl border border-slate-800">
+                <span className="text-slate-400">Speak aloud: </span>
+                <span>Speak 4 digits (e.g. <strong className="text-emerald-300">"1 2 3 4"</strong>) or say <strong className="text-sky-300">"Submit"</strong></span>
+              </div>
+              {voiceHeard && (
+                <div className="text-[11px] text-emerald-400 font-mono bg-emerald-950/40 border border-emerald-500/30 px-2 py-1 rounded-lg flex items-center justify-between">
+                  <span className="text-slate-400 text-[10px]">Heard:</span>
+                  <span className="font-bold">"{voiceHeard}"</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Keypad */}

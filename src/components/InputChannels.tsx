@@ -2,22 +2,34 @@ import React, { useState, useRef, useEffect } from 'react';
 import { QrCode, UploadCloud, Link as LinkIcon, Camera, VideoOff, Loader2, Image as ImageIcon, Mic, Volume2 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { createWorker } from 'tesseract.js';
-import { PaymentTransaction, InputMode } from '../types/payment';
+import { PaymentTransaction, InputMode, AppLanguage } from '../types/payment';
 import { parseUpiUri } from '../services/upiParser';
 import { speakText, numberToWords, createSpeechRecognizer, requestMicPermission } from '../services/speechService';
 import { evaluatePaymentRisk } from '../services/heuristicsEngine';
 
 interface InputChannelsProps {
   onIntercept: (tx: PaymentTransaction, navigateToPin?: boolean) => void;
+  lang?: AppLanguage;
+  hasActiveTransaction?: boolean;
 }
 
-export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => {
+export const InputChannels: React.FC<InputChannelsProps> = ({
+  onIntercept,
+  lang = 'en',
+  hasActiveTransaction = false
+}) => {
   const [activeTab, setActiveTab] = useState<InputMode>('scanner');
   const [isCameraRunning, setIsCameraRunning] = useState(false);
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [manualInput, setManualInput] = useState('');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  
+
+  // Channel Voice Navigation state
+  const [isChannelVoiceActive, setIsChannelVoiceActive] = useState(false);
+  const [channelVoiceHeard, setChannelVoiceHeard] = useState('');
+  const [channelVoiceStatus, setChannelVoiceStatus] = useState('');
+  const channelRecognizerRef = useRef<any>(null);
+
   // Pending QR transaction waiting for user specified amount entry
   const [pendingQrTx, setPendingQrTx] = useState<PaymentTransaction | null>(null);
   const [userAmountInput, setUserAmountInput] = useState<string>('');
@@ -31,12 +43,120 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
+  const stopChannelVoiceListener = () => {
+    if (channelRecognizerRef.current) {
+      try { channelRecognizerRef.current.stop(); } catch(e) {}
+      channelRecognizerRef.current = null;
+    }
+    setIsChannelVoiceActive(false);
+  };
+
+  const promptAndListenChannel = () => {
+    if (hasActiveTransaction || pendingQrTx) return;
+    stopChannelVoiceListener();
+    setChannelVoiceStatus('Speaking prompt...');
+
+    const promptText = lang === 'hi'
+      ? 'वॉइसगार्ड एक्सटेंशन सक्रिय है। कैमरा स्कैनर के लिए "लाइव स्कैनर" कहें, या स्क्रीनशॉट ओसीआर के लिए "अपलोड" कहें।'
+      : 'VoiceGuard Extension active. Say "Live Scanner" for camera scanner, or say "Upload" for screenshot OCR.';
+
+    speakText(
+      promptText,
+      lang,
+      undefined,
+      () => {
+        startListeningChannel();
+      }
+    );
+  };
+
+  const startListeningChannel = () => {
+    if (hasActiveTransaction || pendingQrTx) return;
+    stopChannelVoiceListener();
+    setChannelVoiceStatus('Listening for channel selection...');
+
+    const recognizer = createSpeechRecognizer(
+      lang,
+      (transcript) => {
+        const lower = transcript.toLowerCase().trim();
+        setChannelVoiceHeard(lower);
+
+        // 1. Live Camera Scanner command
+        const camCmds = ['live scanner', 'scanner', 'camera', 'live', 'scan', 'start camera', 'open camera', 'live camera', 'q r'];
+        if (camCmds.some(cmd => lower.includes(cmd))) {
+          stopChannelVoiceListener();
+          setActiveTab('scanner');
+          setChannelVoiceStatus('Recognized: Launching Camera Scanner...');
+          speakText(
+            lang === 'hi' ? 'लाइव कैमरा स्कैनर शुरू किया जा रहा है' : 'Starting live camera QR scanner',
+            lang,
+            undefined,
+            () => {
+              startCamera();
+            }
+          );
+          return;
+        }
+
+        // 2. Screenshot OCR command
+        const ocrCmds = ['upload', 'screenshot', 'ocr', 'image', 'photo', 'upload screenshot', 'file'];
+        if (ocrCmds.some(cmd => lower.includes(cmd))) {
+          stopChannelVoiceListener();
+          setActiveTab('screenshot');
+          setChannelVoiceStatus('Recognized: Opening Screenshot OCR...');
+          speakText(
+            lang === 'hi' ? 'स्क्रीनशॉट मोड। कृपया भुगतान रसीद चुनें' : 'Switched to screenshot OCR mode. Please select your screenshot.',
+            lang,
+            undefined,
+            () => {
+              const fileInput = document.getElementById('screenshotUploadInput') as HTMLInputElement | null;
+              if (fileInput) fileInput.click();
+            }
+          );
+          return;
+        }
+
+        // 3. Custom URI command
+        const manualCmds = ['manual', 'custom', 'uri', 'link'];
+        if (manualCmds.some(cmd => lower.includes(cmd))) {
+          stopChannelVoiceListener();
+          setActiveTab('manual');
+          setChannelVoiceStatus('Recognized: Custom URI Mode');
+          return;
+        }
+      },
+      () => setIsChannelVoiceActive(true),
+      () => setIsChannelVoiceActive(false)
+    );
+
+    if (recognizer) {
+      try {
+        recognizer.start();
+        channelRecognizerRef.current = recognizer;
+        setIsChannelVoiceActive(true);
+      } catch (err) {
+        console.warn("Could not start channel speech recognition:", err);
+      }
+    }
+  };
+
   useEffect(() => {
+    let timer: any;
+    if (!hasActiveTransaction && !pendingQrTx) {
+      timer = setTimeout(() => {
+        promptAndListenChannel();
+      }, 500);
+    } else {
+      stopChannelVoiceListener();
+    }
+
     return () => {
+      clearTimeout(timer);
       stopCamera();
       stopAmountVoiceListener();
+      stopChannelVoiceListener();
     };
-  }, []);
+  }, [hasActiveTransaction, pendingQrTx, lang]);
 
   const stopAmountVoiceListener = () => {
     if (amountRecognizerRef.current) {
@@ -525,6 +645,40 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
           </button>
         </div>
       </div>
+
+      {/* Voice Assistant Navigation Banner for Channels */}
+      {!pendingQrTx && (
+        <div className="p-3.5 rounded-xl bg-slate-950/80 border border-sky-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 shadow-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className={`w-3 h-3 rounded-full ${isChannelVoiceActive ? 'bg-red-500 animate-ping' : 'bg-slate-600'}`} />
+            <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+              <Mic className={`w-3.5 h-3.5 ${isChannelVoiceActive ? 'text-red-400 animate-pulse' : 'text-sky-400'}`} />
+              <span>Voice Control: {isChannelVoiceActive ? 'Listening...' : 'Ready'}</span>
+            </span>
+            <span className="text-slate-500 hidden sm:inline">•</span>
+            <span className="text-xs text-slate-300">
+              Say <strong className="text-sky-300">"Live Scanner"</strong> or <strong className="text-indigo-300">"Upload Screenshot"</strong>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            {channelVoiceHeard && (
+              <span className="text-[11px] text-emerald-400 font-mono bg-emerald-950/40 border border-emerald-500/30 px-2 py-0.5 rounded-lg">
+                "{channelVoiceHeard}"
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={promptAndListenChannel}
+              className="px-2.5 py-1 rounded-lg bg-sky-600/20 hover:bg-sky-600/40 text-sky-300 border border-sky-500/30 text-[11px] font-bold flex items-center gap-1 transition active:scale-95"
+              title="Replay Voice Instructions"
+            >
+              <Volume2 className="w-3 h-3 text-sky-400" />
+              <span>Hear Prompt 🔊</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: Live QR Scanner */}
       {activeTab === 'scanner' && (
