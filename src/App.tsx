@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Header } from './components/Header';
 import { AudioStatusBar } from './components/AudioStatusBar';
-import { ScenarioPicker } from './components/ScenarioPicker';
 import { InputChannels } from './components/InputChannels';
 import { PaymentGuardCard } from './components/PaymentGuardCard';
 import { PaymentTransaction, AppLanguage } from './types/payment';
@@ -12,19 +11,6 @@ export const App: React.FC = () => {
   const [highContrast, setHighContrast] = useState(false);
   const [fontScaled, setFontScaled] = useState(false);
   const [currentTransaction, setCurrentTransaction] = useState<PaymentTransaction | null>(null);
-
-  useEffect(() => {
-    const defaultTx: PaymentTransaction = {
-      vpa: 'electricity-fast-bill@okaxis',
-      name: 'Quick Bill Payment Desk',
-      amount: 9900.00,
-      claimedAmount: 90.00,
-      isVerifiedMerchant: false,
-      isRefundScam: false
-    };
-    defaultTx.risk = evaluatePaymentRisk(defaultTx);
-    setCurrentTransaction(defaultTx);
-  }, []);
 
   const handleSelectTransaction = (tx: PaymentTransaction) => {
     const withRisk = { ...tx, risk: evaluatePaymentRisk(tx) };
@@ -60,7 +46,6 @@ export const App: React.FC = () => {
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-6 space-y-6" role="main">
         <AudioStatusBar lang={lang} />
-        <ScenarioPicker onSelectScenario={handleSelectTransaction} />
         <InputChannels onIntercept={handleSelectTransaction} />
         <PaymentGuardCard tx={currentTransaction} lang={lang} />
       </main>

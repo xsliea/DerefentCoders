@@ -66,7 +66,7 @@ export const InputChannels: React.FC<InputChannelsProps> = ({ onIntercept }) => 
           `Camera is in use (${errName}).\n\nAnother application (like Zoom, Teams, or Windows Camera app) may currently be using your HP webcam. Please close it and try again.`
         );
       } else {
-        alert(`Camera Error (${errName}): ${errMsg}\n\nYou can also test with the 1-click test simulation cases or Screenshot OCR!`);
+        alert(`Camera Error (${errName}): ${errMsg}\n\nYou can also test with Screenshot OCR or Deep Link!`);
       }
     }
   };

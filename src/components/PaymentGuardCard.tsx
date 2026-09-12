@@ -79,6 +79,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
   };
 
   const approvePayment = () => {
+    if (!tx) return;
     audioSynthesizer.playEarcon('safe');
     const amountVal = tx ? tx.amount : 0;
     const msg = lang === 'hi' ? `₹${amountVal} का भुगतान सुरक्षित रूप से पूरा हुआ` : `Payment of ₹${amountVal} completed safely`;
@@ -87,6 +88,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
   };
 
   const rejectPayment = () => {
+    if (!tx) return;
     audioSynthesizer.playEarcon('danger');
     const msg = lang === 'hi' ? "भुगतान रद्द कर दिया गया। आपका खाता सुरक्षित है।" : "Payment cancelled and blocked. Your funds are protected.";
     setActionNotice({ type: 'rejected', text: msg });
@@ -250,7 +252,7 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
               </h3>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              {risk ? risk.flags[0] || 'Verified payment transaction parameters' : 'Choose a simulation case or scan a QR code above'}
+              {risk ? risk.flags[0] || 'Verified payment transaction parameters' : 'Scan a QR code, upload a screenshot, or enter a UPI link above'}
             </p>
           </div>
         </div>
@@ -365,7 +367,9 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
               ? lang === 'hi'
                 ? risk.explainerHi
                 : risk.explainerEn
-              : 'Select any transaction scenario above to test the plain-language safety engine.'}
+              : lang === 'hi'
+                ? 'लेन-देन विवरण देखने के लिए ऊपर QR कोड स्कैन करें या स्क्रीनशॉट अपलोड करें।'
+                : 'Scan a QR code, upload a screenshot, or enter a UPI link above to verify payment safety.'}
           </p>
         </div>
 
@@ -442,7 +446,12 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
             {/* Reject Button */}
             <button
               onClick={rejectPayment}
-              className="py-4 px-5 rounded-2xl bg-red-600 hover:bg-red-500 active:scale-95 text-white font-black text-sm md:text-base flex items-center justify-center space-x-2 shadow-lg shadow-red-600/20 focus:ring-4 focus:ring-red-400 transition"
+              disabled={!tx}
+              className={`py-4 px-5 rounded-2xl font-black text-sm md:text-base flex items-center justify-center space-x-2 shadow-lg transition ${
+                !tx
+                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/60'
+                  : 'bg-red-600 hover:bg-red-500 active:scale-95 text-white shadow-red-600/20 focus:ring-4 focus:ring-red-400'
+              }`}
               aria-label="Reject and Cancel Payment"
             >
               <XCircle className="w-5 h-5" />
@@ -452,10 +461,13 @@ export const PaymentGuardCard: React.FC<PaymentGuardCardProps> = ({ tx, lang }) 
             {/* Double-Tap Approve Button */}
             <button
               onClick={handleDoubleTap}
-              className={`py-4 px-5 rounded-2xl font-black text-sm md:text-base flex items-center justify-center space-x-2 shadow-lg transition active:scale-95 ${
-                doubleTapCount === 1
-                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/30 animate-pulse'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20'
+              disabled={!tx}
+              className={`py-4 px-5 rounded-2xl font-black text-sm md:text-base flex items-center justify-center space-x-2 shadow-lg transition ${
+                !tx
+                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/60'
+                  : doubleTapCount === 1
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/30 animate-pulse active:scale-95'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20 active:scale-95'
               }`}
               aria-label="Approve payment. Double tap anywhere to confirm."
             >
